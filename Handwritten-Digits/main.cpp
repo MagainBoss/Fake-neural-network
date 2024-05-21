@@ -111,7 +111,7 @@ void train()
     int i = 0;
     std::ifstream weights("weights.txt");
     if (weights)
-        i = load_weights() + 1;
+        i = load_weights();
     else
         init_weights();
     weights.close();
@@ -136,7 +136,7 @@ void train()
                 output[n] = sigmoid(output[n]);
             }
             for (int n = 0; n < 10; n++)
-                output_error[n] = output[n] - ((n == result - 1) ? 1 : 0);
+                output_error[n] = output[n] - ((n == result) ? 1 : 0);
             for (int n = 0; n < size; n++)
             {
                 hidden_error[n] = 0;
@@ -160,7 +160,7 @@ void train()
             memset(hidden_error, sizeof(hidden_error), 0);
             memset(output_error, sizeof(output_error), 0);
         }
-        save_weights(i);
+        save_weights(i + 1);
         std::cout << "Time used: " << std::time(0) - start_time << "s" << std::endl;
     }
     std::cout << "Training finished." << std::endl;
@@ -192,7 +192,7 @@ void test()
         for (int n = 1; n < 10; n++)
             if (output[n] > output[max])
                 max = n;
-        if (max == result - 1)
+        if (max == result)
             correct++;
 
         memset(hidden, sizeof(hidden), 0);
