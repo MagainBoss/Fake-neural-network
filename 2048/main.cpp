@@ -4,10 +4,18 @@
 #include <random>
 #include <cstring>
 #include <ctime>
+#include <vector>
+#include <thread>
+#include <future>
+#include <queue>
+
+double learning_rate = 0.01;
+int episodes = 10000;
 
 std::random_device rd;
 std::mt19937 gen(rd());
 std::uniform_real_distribution<> dis(-0.5, 0.5);
+std::uniform_real_distribution<> dis2(-learning_rate, learning_rate);
 
 class Environment_2048
 {
@@ -17,6 +25,7 @@ private:
     std::vector<bool> empty_pos;
     int score;
     int maxNum = 0;
+    int step = 0;
 
     bool checkFull()
     {
@@ -39,13 +48,9 @@ private:
                 if (board[i * board_size + j] == 0)
                     continue;
                 if (board[i * board_size + j] == board[i * board_size + j + 1])
-                {
                     return true;
-                }
                 else if (board[i * board_size + j] == board[i * board_size + j + board_size])
-                {
                     return true;
-                }
             }
         }
         return false;
@@ -53,8 +58,6 @@ private:
 
     void addNumber()
     {
-        if (checkFull())
-            return;
         short pos = 0;
         std::uniform_int_distribution<> dis_int(0, board_size * board_size - 1);
         do
@@ -65,16 +68,6 @@ private:
         board[pos] = num;
     }
 
-    void restart()
-    {
-        board.assign(board_size * board_size, 0);
-        empty_pos.assign(board_size * board_size, true);
-        score = 0;
-        maxNum = 0;
-        addNumber();
-        addNumber();
-    }
-
 public:
     Environment_2048(int size = 4)
     {
@@ -83,6 +76,16 @@ public:
         empty_pos.assign(board_size * board_size, true);
         score = 0;
         maxNum = 0;
+        addNumber();
+        addNumber();
+    }
+    void restart()
+    {
+        board.assign(board_size * board_size, 0);
+        empty_pos.assign(board_size * board_size, true);
+        score = 0;
+        maxNum = 0;
+        step = 0;
         addNumber();
         addNumber();
     }
@@ -98,25 +101,6 @@ public:
         }
         std::cout << std::endl;
     }
-    void randomGenerate()
-    {
-        std::uniform_int_distribution<> dis_int(0, 10);
-        do
-        {
-            board.assign(board_size * board_size, 1);
-            for (int i = 0; i < board_size * board_size; i++)
-            {
-                int num = dis_int(gen);
-                while (num > 0)
-                {
-                    board[i] *= 2;
-                    num--;
-                }
-            }
-        } while (!canMerge());
-        score = 0;
-        maxNum = 0;
-    }
     std::vector<int> getBoard() const
     {
         return board;
@@ -125,16 +109,16 @@ public:
     {
         return score;
     }
+    int returnStep() const
+    {
+        return step;
+    }
+    int returnMaxNum()
+    {
+        return maxNum;
+    }
     bool move(int direction)
     {
-        if (checkFull() && (!canMerge()))
-        {
-            printBoard();
-            std::cout << "Game Over!  Score: " << score << "   MaxNum: " << maxNum << std::endl;
-            restart();
-
-            return true;
-        }
         // 0: up, 1: down, 2: left, 3: right
         if (direction == 0)
         {
@@ -288,292 +272,298 @@ public:
                 } while (ifMerge);
             }
         }
+        if (checkFull())
+        {
+            // printBoard();
+            std::cout << "Game Over!  Score: " << score << "   MaxNum: " << maxNum << std::endl;
+
+            return true;
+        }
         addNumber();
+        step++;
+        if (checkFull() && (!canMerge()))
+        {
+            // printBoard();
+            std::cout << "Game Over!  Score: " << score << "   MaxNum: " << maxNum << std::endl;
+
+            return true;
+        }
         return false;
     }
-    int returnMaxNum()
-    {
-        return maxNum;
-    }
-} env;
-
-double learning_rate = 0.01;
-int episodes = 1000;
+};
 
 inline double sigmoid(double x)
 {
     return 1.0 / (1.0 + std::exp(-x));
 }
 
-inline double sigmoid_derivative(double x)
+std::vector<std::vector<double>> matrixMultiply(const std::vector<std::vector<double>> &matA, const std::vector<std::vector<double>> &matB, int startRow, int endRow)
 {
-    return x * (1.0 - x);
+    int colsA = matA[0].size();
+    std::vector<std::vector<double>> result(endRow - startRow, std::vector<double>(1, 0));
+
+    for (int i = startRow; i < endRow; ++i)
+        for (int j = 0; j < colsA; ++j)
+            result[i - startRow][0] += matA[i][j] * matB[j][0];
+    return result;
 }
+
+int numThreads = std::thread::hardware_concurrency();
+const std::vector<std::vector<double>> matrixCalculate(const std::vector<std::vector<double>> &matA, const std::vector<std::vector<double>> &matB)
+{
+    int numRowsA = matA.size();
+
+    std::vector<std::vector<double>> result(numRowsA, std::vector<double>(1, 0));
+
+    std::queue<std::future<std::vector<std::vector<double>>>> futures;
+
+    int rowsPerThread = numRowsA / numThreads;
+    int remainingRows = numRowsA % numThreads;
+    int realThreads = numThreads;
+    if (rowsPerThread == 0)
+    {
+        realThreads = remainingRows;
+        remainingRows = 0;
+        rowsPerThread = 1;
+    }
+    else
+        realThreads = numRowsA / rowsPerThread;
+    for (int i = 0; i < realThreads; ++i)
+    {
+        int startRow = i * rowsPerThread;
+        int endRow = i * rowsPerThread + rowsPerThread + (i == (realThreads - 1) ? remainingRows : 0);
+
+        futures.push(std::async(std::launch::async, matrixMultiply, std::cref(matA), std::cref(matB), startRow, endRow));
+    }
+
+    for (int i = 0; futures.empty() == false; ++i)
+    {
+        std::vector<std::vector<double>> subResult = futures.front().get();
+        for (int j = 0; j < subResult.size(); ++j)
+            result[j + i * rowsPerThread][0] = subResult[j][0];
+        futures.pop();
+    }
+    return result;
+}
+
+int board_size = 4;
 
 int size = 500;
 int result;
-std::vector<int> input;
-std::vector<std::vector<double>> weights1;
-std::vector<double> hidden1(size);
-std::vector<std::vector<double>> weights2;
-std::vector<double> hidden2(size);
-std::vector<std::vector<double>> weights3;
-double output[4];
-std::vector<double> hidden1_error(size);
-std::vector<double> hidden2_error(size);
-double output_error[4];
+int input_size = board_size * board_size + 2; // 0~board_size*board_size-1:board, input_size-2: step, input_size-1: score;
+std::vector<std::vector<double>> input(input_size, std::vector<double>(1, 0));
+std::vector<std::vector<double>> hidden1(size, std::vector<double>(1, 0));
+std::vector<std::vector<double>> hidden2(size, std::vector<double>(1, 0));
+std::vector<std::vector<double>> output;
 
-void init(int board_size)
+struct NeurNet
 {
-    input.assign(board_size * board_size, 0);
-    weights1.resize(size);
+    std::vector<std::vector<double>> weights1;
+    std::vector<std::vector<double>> weights2;
+    std::vector<std::vector<double>> weights3;
+} father, son[15];
+
+void init()
+{
+    father.weights1.assign(size, std::vector<double>(input_size, 0));
+    father.weights2.assign(size, std::vector<double>(size, 0));
+    father.weights3.resize(4, std::vector<double>(size, 0));
     for (int i = 0; i < size; i++)
-    {
-        weights1[i].assign(board_size * board_size, 0);
-    }
-    hidden1.assign(size, 0);
-    weights2.resize(size);
-    for (int i = 0; i < size; i++)
-    {
-        weights2[i].assign(size, 0);
-    }
-    hidden2.assign(size, 0);
-    weights3.resize(4);
-    for (int i = 0; i < 4; i++)
-    {
-        weights3[i].assign(size, 0);
-    }
-    for (int i = 0; i < size; i++)
-        for (int j = 0; j < board_size * board_size; j++)
-            weights1[i][j] = dis(gen);
+        for (int j = 0; j < input_size; j++)
+            father.weights1[i][j] = dis(gen);
     for (int i = 0; i < size; i++)
         for (int j = 0; j < size; j++)
-            weights2[i][j] = dis(gen);
+            father.weights2[i][j] = dis(gen);
     for (int i = 0; i < 4; i++)
         for (int j = 0; j < size; j++)
-            weights3[i][j] = dis(gen);
-    hidden1_error.assign(size, 0);
-    hidden2_error.assign(size, 0);
+            father.weights3[i][j] = dis(gen);
+    for (int t = 0; t < 15; t++)
+    {
+        son[t].weights1.assign(size, std::vector<double>(input_size, 0));
+        son[t].weights2.assign(size, std::vector<double>(size, 0));
+        son[t].weights3.assign(4, std::vector<double>(size, 0));
+    }
 }
 
-void save_weights(int ep, int board_size)
+void save_weights(int ep)
 {
     std::ofstream out("weights.txt");
-    out << ep + 1 << std::endl;
+    out << ep << std::endl;
     for (int i = 0; i < size; i++)
     {
-        for (int j = 0; j < board_size * board_size; j++)
-            out << weights1[i][j] << " ";
+        for (int j = 0; j < input_size; j++)
+            out << father.weights1[i][j] << " ";
         out << std::endl;
     }
     for (int i = 0; i < size; i++)
     {
         for (int j = 0; j < size; j++)
-            out << weights2[i][j] << " ";
+            out << father.weights2[i][j] << " ";
         out << std::endl;
     }
     for (int i = 0; i < 4; i++)
     {
         for (int j = 0; j < size; j++)
-            out << weights3[i][j] << " ";
+            out << father.weights3[i][j] << " ";
         out << std::endl;
     }
     out.close();
 }
 
-int load_weights(int board_size)
+int load_weights()
 {
     std::ifstream in("weights.txt");
     int ep;
     in >> ep;
     for (int i = 0; i < size; i++)
-        for (int j = 0; j < board_size * board_size; j++)
-            in >> weights1[i][j];
+        for (int j = 0; j < input_size; j++)
+            in >> father.weights1[i][j];
     for (int i = 0; i < size; i++)
         for (int j = 0; j < size; j++)
-            in >> weights2[i][j];
+            in >> father.weights2[i][j];
     for (int i = 0; i < 4; i++)
         for (int j = 0; j < size; j++)
-            in >> weights3[i][j];
+            in >> father.weights3[i][j];
     in.close();
     return ep;
 }
 
-void test(int board_size)
+void transmit()
 {
-    std::cout << "Testing..." << std::endl;
-    Environment_2048 test;
-    int start_time = std::time(0);
-    bool end = false;
-    std::uniform_int_distribution<> dis_int(0, 3);
-    while (!end)
+    for (int t = 0; t < 10; t++)
     {
-        hidden1.assign(size, 0);
-        hidden2.assign(size, 0);
-        memset(output, sizeof(output), 0);
-        std::vector<int> board = test.getBoard();
-        test.printBoard();
-        for (int n = 0; n < board_size; n++)
-        {
-            for (int m = 0; m < board_size; m++)
-            {
-                input[n * board_size + m] = (board[n * board_size + m] == 0) ? 0 : board[n * board_size + m];
-            }
-        }
-        for (int n = 0; n < size; n++)
-        {
-            for (int m = 0; m < board_size * board_size; m++)
-            {
-                hidden1[n] += sigmoid(weights1[n][m] * input[m]);
-                hidden1[n] = sigmoid(hidden1[n]);
-            }
-        }
-        for (int n = 0; n < size; n++)
-        {
-            for (int m = 0; m < size; m++)
-            {
-                hidden2[n] += sigmoid(weights2[n][m] * hidden1[m]);
-                hidden2[n] = sigmoid(hidden2[n]);
-            }
-        }
-        for (int n = 0; n < 4; n++)
-        {
-            for (int m = 0; m < size; m++)
-            {
-                output[n] += sigmoid(weights2[n][m] * hidden2[m]);
-                output[n] = sigmoid(output[n]);
-            }
-        }
-        int choice = 0;
-        for (int n = 1; n < 4; n++)
-        {
-            choice = output[n] > output[choice] ? n : choice;
-        }
-        if (output[choice] < dis(gen) + 0.5)
-            choice = dis_int(gen);
-        end = test.move(choice);
+        for (int i = 0; i < size; i++)
+            for (int j = 0; j < input_size; j++)
+                son[t].weights1[i][j] = father.weights1[i][j] + dis2(gen);
+        for (int i = 0; i < size; i++)
+            for (int j = 0; j < size; j++)
+                son[t].weights2[i][j] = father.weights2[i][j] + dis2(gen);
+        for (int i = 0; i < 4; i++)
+            for (int j = 0; j < size; j++)
+                son[t].weights3[i][j] = father.weights3[i][j] + dis2(gen);
     }
-    std::cout << "Time used: " << std::time(0) - start_time << "s" << std::endl;
+    for (int t = 10; t < 13; t++)
+    {
+        for (int i = 0; i < size; i++)
+            for (int j = 0; j < input_size; j++)
+                son[t].weights1[i][j] = father.weights1[i][j] + dis2(gen) * 10;
+        for (int i = 0; i < size; i++)
+            for (int j = 0; j < size; j++)
+                son[t].weights2[i][j] = father.weights2[i][j] + dis2(gen) * 10;
+        for (int i = 0; i < 4; i++)
+            for (int j = 0; j < size; j++)
+                son[t].weights3[i][j] = father.weights3[i][j] + dis2(gen) * 10;
+    }
+    for (int t = 13; t < 15; t++)
+    {
+        for (int i = 0; i < size; i++)
+            for (int j = 0; j < input_size; j++)
+                son[t].weights1[i][j] = father.weights1[i][j] + dis2(gen) * 100;
+        for (int i = 0; i < size; i++)
+            for (int j = 0; j < size; j++)
+                son[t].weights2[i][j] = father.weights2[i][j] + dis2(gen) * 100;
+        for (int i = 0; i < 4; i++)
+            for (int j = 0; j < size; j++)
+                son[t].weights3[i][j] = father.weights3[i][j] + dis2(gen) * 100;
+    }
 }
 
-void train(int board_size)
+int evaluate(const NeurNet &model)
 {
-    init(board_size);
-    int i = 1;
-    std::ifstream weights("weights.txt");
-    if (weights)
-        i = load_weights(board_size) + 1;
-    weights.close();
-    for (; i < episodes; i++)
+    Environment_2048 env;
+    std::vector<int> board = env.getBoard();
+    bool end = false;
+    while (!end)
     {
-        double start_time = std::time(0);
-        double total_loss = 0;
-        if (i % 1000 == 999)
-            std::cout << "Episode: " << i + 1 << std::endl;
-        env.randomGenerate();
-        std::vector<int> board = env.getBoard();
+        board = env.getBoard();
         for (int n = 0; n < board_size; n++)
-        {
             for (int m = 0; m < board_size; m++)
-            {
-                input[n * board_size + m] = (board[n * board_size + m] == 0) ? 0 : board[n * board_size + m];
-            }
-        }
+                input[n * board_size + m][0] = sigmoid(board[n * board_size + m]);
+        input[input_size - 2][0] = sigmoid(env.returnStep());
+        input[input_size - 1][0] = sigmoid(env.returnScore());
+        hidden1.assign(size, std::vector<double>(1, 0));
+        hidden2.assign(size, std::vector<double>(1, 0));
+        output.assign(4, std::vector<double>(1, 0));
+        hidden1 = matrixCalculate(std::cref(model.weights1), std::cref(input));
         for (int n = 0; n < size; n++)
-        {
-            for (int m = 0; m < board_size * board_size; m++)
-            {
-                hidden1[n] += sigmoid(weights1[n][m] * input[m]);
-                hidden1[n] = sigmoid(hidden1[n]);
-            }
-        }
+            hidden1[n][0] = sigmoid(hidden1[n][0]);
+        hidden2 = matrixCalculate(std::cref(model.weights2), std::cref(hidden1));
         for (int n = 0; n < size; n++)
-        {
-            for (int m = 0; m < size; m++)
-            {
-                hidden2[n] += sigmoid(weights2[n][m] * hidden1[m]);
-                hidden2[n] = sigmoid(hidden2[n]);
-            }
-        }
+            hidden2[n][0] = sigmoid(hidden2[n][0]);
+        output = matrixCalculate(std::cref(model.weights3), std::cref(hidden2));
         for (int n = 0; n < 4; n++)
-        {
-            for (int m = 0; m < size; m++)
-            {
-                output[n] += sigmoid(weights2[n][m] * hidden2[m]);
-                output[n] = sigmoid(output[n]);
-            }
-        }
+            output[n][0] = sigmoid(output[n][0]);
         int choice = 0;
         for (int n = 1; n < 4; n++)
-        {
-            choice = output[n] > output[choice] ? n : choice;
-        }
-        bool end = env.move(choice);
-        int reward = env.returnScore();
-        for (int n = 0; n < 4; n++)
-        {
-            if (n == choice)
-                /*if (end)
-                    output_error[n] = output[n] - (0.25 - 1.0 / ((double)reward + 8.0) - 1.0 / ((double)env.returnMaxNum() + 8.0));
-                else
-                    output_error[n] = output[n] - (1.0 - 1.0 / ((double)reward + 8.0 / 3.0) - 1.0 / ((double)env.returnMaxNum() + 8.0 / 3.0));*/
-                output_error[n] = output[n] - (reward / double(2 * (reward + 1)));
-            /*else if (end)
-                output_error[n] = output[n] - (0.25 + 1.0 / ((double)reward + 8.0 / 3.0) + 1.0 / ((double)env.returnMaxNum() + 8.0 / 3.0));*/
-            else
-                output_error[n] = output[n] - (1 - reward / double(2 * (reward + 1)));
-        }
-        total_loss = output_error[choice] * output_error[choice];
-        for (int n = 0; n < size; n++)
-        {
-            hidden2_error[n] = 0;
-            for (int m = 0; m < 4; m++)
-                hidden2_error[n] += weights3[m][n] * output_error[m];
-            hidden2_error[n] *= sigmoid_derivative(hidden2[n]);
-        }
-        for (int n = 0; n < size; n++)
-        {
-            hidden1_error[n] = 0;
-            for (int m = 0; m < size; m++)
-                hidden1_error[n] += weights2[m][n] * hidden2_error[m];
-            hidden1_error[n] *= sigmoid_derivative(hidden1[n]);
-        }
-        for (int n = 0; n < 4; n++)
-            for (int m = 0; m < size; m++)
-                weights3[n][m] -= learning_rate * output_error[n] * hidden2[m];
-        for (int n = 0; n < size; n++)
-            for (int m = 0; m < size; m++)
-                weights2[n][m] -= learning_rate * hidden2_error[n] * hidden1[m];
-        for (int n = 0; n < size; n++)
-            for (int m = 0; m < board_size * board_size; m++)
-                weights1[n][m] -= learning_rate * hidden1_error[n] * input[m];
+            choice = output[n][0] > output[choice][0] ? n : choice;
+        end = env.move(choice);
+    }
+    return env.returnScore();
+}
 
-        hidden1.assign(size, 0);
-        hidden2.assign(size, 0);
-        memset(output, sizeof(output), 0);
-        hidden1_error.assign(size, 0);
-        hidden2_error.assign(size, 0);
-        memset(output_error, sizeof(output_error), 0);
-        if (i % 1000 == 999)
+void train()
+{
+    init();
+    int i = 0;
+    std::ifstream weights("weights.txt");
+    if (weights)
+        i = load_weights();
+    weights.close();
+    std::ofstream score_log("score_log.txt", std::ofstream::app);
+    for (; i < episodes; i++)
+    {
+        int start = time(0);
+        std::cout << "Episode: " << i + 1 << std::endl;
+
+        int next = -1;
+        int maxScore = 0;
+        maxScore += evaluate(std::cref(father));
+        maxScore += evaluate(std::cref(father));
+        maxScore += evaluate(std::cref(father));
+        maxScore += evaluate(std::cref(father));
+        maxScore /= 4;
+        transmit();
+
+        for (int j = 0; j < 15; j++)
         {
-            save_weights(i, board_size);
-            std::cout << "Time used: " << (double)std::time(0) - start_time << "s/episode" << std::endl;
-            std::cout << "Total loss: " << total_loss << std::endl;
-            // test(board_size);
+            int score = evaluate(std::cref(son[j]));
+            score += evaluate(std::cref(son[j]));
+            score += evaluate(std::cref(son[j]));
+            score += evaluate(std::cref(son[j]));
+            score /= 4;
+            if (score > maxScore)
+            {
+                maxScore = score;
+                next = j;
+            }
         }
+        if (next != -1)
+        {
+            father = son[next];
+        }
+        std::cout << "MaxScore: " << maxScore << std::endl;
+        if (next != -1)
+            std::cout << "Selected the next generation: " << next + 1 << std::endl;
+        else
+            std::cout << "Selected the father generation." << std::endl;
+
+        save_weights(i + 1);
+        score_log << i + 1 << " " << maxScore << std::endl;
+        std::cout << "Cost: " << time(0) - start << "s" << std::endl
+                  << std::endl;
     }
     std::cout << "Training finished." << std::endl;
 }
 
 int main()
 {
-    int board_size = 4;
     std::ifstream para("./para.txt");
     std::string tmp;
     para >> tmp >> board_size >> tmp >> episodes >> tmp >> size >> tmp >> learning_rate;
     std::cout << "episodes: " << episodes << " learning_rate: " << learning_rate << " model_size: " << size << std::endl;
     para.close();
-    train(board_size);
-    test(board_size);
+    train();
+    std::cout << "Evaluating the father generation." << std::endl;
+    std::cout << "Score: " << evaluate(std::cref(father)) << std::endl;
     return 0;
 }

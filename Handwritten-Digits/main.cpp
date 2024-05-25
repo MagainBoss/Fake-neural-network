@@ -4,8 +4,12 @@
 #include <random>
 #include <cstring>
 #include <ctime>
+#include <vector>
+#include <future>
+#include <thread>
+#include <queue>
 
-double learning_rate = 0.01;
+double learning_rate = 0.001;
 int epoch = 10;
 int data_size = 0;
 int test_size = 0;
@@ -20,6 +24,61 @@ inline double sigmoid_derivative(double x)
     return x * (1.0 - x);
 }
 
+// 矩阵乘法 因矩阵B始终为一列，因此进行了简化
+std::vector<std::vector<double>> matrixMultiply(const std::vector<std::vector<double>> &matA, const std::vector<std::vector<double>> &matB, int startRow, int endRow)
+{
+    int colsA = matA[0].size();
+    std::vector<std::vector<double>> result(endRow - startRow, std::vector<double>(1, 0));
+
+    for (int i = startRow; i < endRow; i++)
+    {
+        for (int j = 0; j < colsA; j++)
+        {
+            result[i - startRow][0] += matA[i][j] * matB[j][0];
+        }
+    }
+    return result;
+}
+
+int numThreads = std::thread::hardware_concurrency();
+const std::vector<std::vector<double>> matrixCalculate(const std::vector<std::vector<double>> &matA, const std::vector<std::vector<double>> &matB)
+{
+    int numRowsA = matA.size();
+    int numColsA = matA[0].size();
+
+    std::vector<std::vector<double>> result(numRowsA, std::vector<double>(1, 0));
+
+    std::queue<std::future<std::vector<std::vector<double>>>> futures;
+
+    int rowsPerThread = numRowsA / numThreads;
+    int remainingRows = numRowsA % numThreads;
+    int realThreads = numThreads;
+    if (rowsPerThread == 0)
+    {
+        realThreads = remainingRows;
+        remainingRows = 0;
+        rowsPerThread = 1; // 任务太少，每个线程只负责一个任务
+    }
+    else
+        realThreads = numRowsA / rowsPerThread;
+    for (int i = 0; i < realThreads; i++)
+    {
+        int startRow = i * rowsPerThread;
+        int endRow = i * rowsPerThread + rowsPerThread + (i == (realThreads - 1) ? remainingRows : 0);
+
+        futures.push(std::async(std::launch::async, matrixMultiply, std::cref(matA), std::cref(matB), startRow, endRow));
+    }
+
+    for (int i = 0; futures.empty() == false; i++)
+    {
+        std::vector<std::vector<double>> subResult = futures.front().get();
+        for (int j = 0; j < subResult.size(); j++)
+            result[j + i * rowsPerThread][0] = subResult[j][0];
+        futures.pop();
+    }
+    return result;
+}
+
 std::random_device rd;
 std::mt19937 gen(rd());
 std::uniform_real_distribution<> dis(-0.5, 0.5);
@@ -27,15 +86,15 @@ std::uniform_real_distribution<> dis(-0.5, 0.5);
 const int size_x = 28;
 const int size_y = 28;
 
-const int size = 500;
+int size = 500;
 int result;
-short input[size_x * size_y];
-double weights1[size][size_x * size_y];
-double hidden[size];
-double weights2[10][size];
-double output[10];
-double hidden_error[size];
-double output_error[10];
+std::vector<std::vector<double>> input(size_x *size_y, std::vector<double>(1, 0));
+std::vector<std::vector<double>> weights1(size, std::vector<double>(size_x *size_y, 0));
+std::vector<std::vector<double>> hidden(size, std::vector<double>(1, 0));
+std::vector<std::vector<double>> weights2(10, std::vector<double>(size, 0));
+std::vector<std::vector<double>> output(10, std::vector<double>(1, 0));
+std::vector<double> hidden_error(size, 0);
+std::vector<double> output_error(10, 0);
 
 void init_weights()
 {
@@ -61,7 +120,7 @@ void init_input(int count, bool test = false)
         for (int j = 0; j < size_y; j++)
         {
             char c = dat.get();
-            input[i * size_x + j] = (c == '*') ? 1 : 0;
+            input[i * size_x + j][0] = (c == '*') ? 1 : 0;
         }
         dat.get();
     }
@@ -122,43 +181,32 @@ void train()
         for (int j = 0; j < data_size; j++)
         {
             init_input(j + 1);
-
+            hidden = matrixCalculate(std::cref(weights1), std::cref(input));
             for (int n = 0; n < size; n++)
-            {
-                for (int m = 0; m < size_x * size_y; m++)
-                    hidden[n] += weights1[n][m] * input[m];
-                hidden[n] = sigmoid(hidden[n]);
-            }
+                hidden[n][0] = sigmoid(hidden[n][0]);
+            output = matrixCalculate(std::cref(weights2), std::cref(hidden));
             for (int n = 0; n < 10; n++)
-            {
-                for (int m = 0; m < size; m++)
-                    output[n] += weights2[n][m] * hidden[m];
-                output[n] = sigmoid(output[n]);
-            }
+                output[n][0] = sigmoid(output[n][0]);
             for (int n = 0; n < 10; n++)
-                output_error[n] = output[n] - ((n == result) ? 1 : 0);
+                output_error[n] = output[n][0] - ((n == result) ? 1 : 0);
             for (int n = 0; n < size; n++)
             {
                 hidden_error[n] = 0;
                 for (int m = 0; m < 10; m++)
                     hidden_error[n] += weights2[m][n] * output_error[m];
-                hidden_error[n] *= sigmoid_derivative(hidden[n]);
+                hidden_error[n] *= sigmoid_derivative(hidden[n][0]);
             }
             for (int n = 0; n < 10; n++)
-            {
                 for (int m = 0; m < size; m++)
-                    weights2[n][m] -= learning_rate * output_error[n] * hidden[m];
-            }
+                    weights2[n][m] -= learning_rate * output_error[n] * hidden[m][0];
             for (int n = 0; n < size; n++)
-            {
                 for (int m = 0; m < size_x * size_y; m++)
-                    weights1[n][m] -= learning_rate * hidden_error[n] * input[m];
-            }
+                    weights1[n][m] -= learning_rate * hidden_error[n] * input[m][0];
 
-            memset(hidden, sizeof(hidden), 0);
-            memset(output, sizeof(output), 0);
-            memset(hidden_error, sizeof(hidden_error), 0);
-            memset(output_error, sizeof(output_error), 0);
+            hidden.assign(size, std::vector<double>(1, 0));
+            output.assign(10, std::vector<double>(1, 0));
+            hidden_error.assign(size, 0);
+            output_error.assign(10, 0);
         }
         save_weights(i + 1);
         std::cout << "Time used: " << std::time(0) - start_time << "s" << std::endl;
@@ -175,19 +223,12 @@ void test()
     {
         init_input(i + 1, true);
 
+        hidden = matrixCalculate(weights1, input);
         for (int n = 0; n < size; n++)
-        {
-            for (int m = 0; m < size_x * size_y; m++)
-                hidden[n] += weights1[n][m] * input[m];
-            hidden[n] = sigmoid(hidden[n]);
-        }
+            hidden[n][0] = sigmoid(hidden[n][0]);
+        output = matrixCalculate(weights2, hidden);
         for (int n = 0; n < 10; n++)
-        {
-
-            for (int m = 0; m < size; m++)
-                output[n] += weights2[n][m] * hidden[m];
-            output[n] = sigmoid(output[n]);
-        }
+            output[n][0] = sigmoid(output[n][0]);
         int max = 0;
         for (int n = 1; n < 10; n++)
             if (output[n] > output[max])
@@ -195,8 +236,8 @@ void test()
         if (max == result)
             correct++;
 
-        memset(hidden, sizeof(hidden), 0);
-        memset(output, sizeof(output), 0);
+        hidden.assign(size, std::vector<double>(1, 0));
+        output.assign(10, std::vector<double>(1, 0));
     }
     std::cout << "Accuracy: " << correct / (double)test_size * 100 << "%" << std::endl;
     std::cout << "Time used: " << std::time(0) - start_time << "s" << std::endl;
